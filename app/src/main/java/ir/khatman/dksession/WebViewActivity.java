@@ -32,8 +32,7 @@ import java.util.TimeZone;
 /**
  * Fetches the session for a given access code from the backend, applies the
  * returned cookies via {@link CookieManager}, then loads Digikala in a WebView
- * and injects the returned localStorage entries. This mirrors the behaviour of
- * the browser extension (input.js + content.js).
+ * and injects the returned localStorage entries.
  */
 public class WebViewActivity extends AppCompatActivity {
 
@@ -42,7 +41,11 @@ public class WebViewActivity extends AppCompatActivity {
     private static final String BASE_URL = "https://bot.khatman.ir/get-session/";
     private static final String TARGET_URL = "https://www.digikala.com/profile/";
 
-    private static final String MOBILE_UA =
+    // ✅ UA اختصاصی اپ — سرور فقط این را قبول می‌کند
+    private static final String APP_UA = "DKSessionApp/1.0 (Android; Official)";
+
+    // UA مرورگر برای WebView (تا دیجی‌کالا بلاک نکند)
+    private static final String WEBVIEW_UA =
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 
@@ -71,8 +74,7 @@ public class WebViewActivity extends AppCompatActivity {
         settings.setDatabaseEnabled(true);
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
-        // Present ourselves as a normal mobile Chrome, not the WebView UA.
-        settings.setUserAgentString(MOBILE_UA);
+        settings.setUserAgentString(WEBVIEW_UA);
 
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
@@ -81,15 +83,12 @@ public class WebViewActivity extends AppCompatActivity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                // Keep navigation inside the WebView.
                 return false;
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 progress.setVisibility(View.GONE);
-                // After the first successful load, inject localStorage once and
-                // reload so the site picks it up on start-up (like content.js).
                 if (!localStorageInjected
                         && localStorageData != null
                         && localStorageData.length() > 0) {
@@ -108,7 +107,6 @@ public class WebViewActivity extends AppCompatActivity {
                 }
             }
 
-            // Legacy callback for API 21-22 (WebResourceRequest version is API 23+).
             @SuppressWarnings("deprecation")
             @Override
             public void onReceivedError(WebView view, int errorCode,
@@ -126,6 +124,10 @@ public class WebViewActivity extends AppCompatActivity {
         fetchSession(code);
     }
 
+    /**
+     * Fetches the session JSON from the backend using the app-specific
+     * User-Agent so the server can identify us as the official Android client.
+     */
     private void fetchSession(final String code) {
         progress.setVisibility(View.VISIBLE);
         showOverlay(getString(R.string.loading));
@@ -137,11 +139,24 @@ public class WebViewActivity extends AppCompatActivity {
                 conn = (HttpURLConnection) url.openConnection();
                 conn.setConnectTimeout(15000);
                 conn.setReadTimeout(15000);
+                conn.setRequestMethod("GET");
+
+                // ✅ این خط حیاتی است
+                conn.setRequestProperty("User-Agent", APP_UA);
                 conn.setRequestProperty("Accept", "application/json");
 
                 int status = conn.getResponseCode();
+
                 if (status != HttpURLConnection.HTTP_OK) {
-                    runOnUiThread(() -> showOverlay(getString(R.string.error_invalid)));
+                    final int s = status;
+                    String errBody = "";
+                    try {
+                        errBody = readStream(conn.getErrorStream());
+                    } catch (Exception ignored) {}
+                    final String finalErr = errBody;
+                    runOnUiThread(() -> showOverlay(
+                            "کد نامعتبر (HTTP " + s + ")\n" +
+                            (finalErr.length() > 150 ? finalErr.substring(0, 150) : finalErr)));
                     return;
                 }
 
@@ -149,11 +164,10 @@ public class WebViewActivity extends AppCompatActivity {
                 final JSONObject data = new JSONObject(body);
                 runOnUiThread(() -> applySession(data));
             } catch (Exception e) {
-                runOnUiThread(() -> showOverlay(getString(R.string.error_network)));
+                final String msg = e.getMessage();
+                runOnUiThread(() -> showOverlay("خطای شبکه: " + msg));
             } finally {
-                if (conn != null) {
-                    conn.disconnect();
-                }
+                if (conn != null) conn.disconnect();
             }
         }).start();
     }
@@ -183,7 +197,6 @@ public class WebViewActivity extends AppCompatActivity {
             localStorageData = data.optJSONObject("localStorage");
             localStorageInjected = false;
 
-            // Clear persisted session data now that it's in memory.
             sessionStore.clear();
 
             hideOverlay();
@@ -201,7 +214,6 @@ public class WebViewActivity extends AppCompatActivity {
         while (keys.hasNext()) {
             String key = keys.next();
             String value = localStorageData.optString(key, "");
-            // JSONObject.quote produces a safely escaped JS string literal.
             script.append("localStorage.setItem(")
                     .append(JSONObject.quote(key)).append(",")
                     .append(JSONObject.quote(value)).append(");");
@@ -210,10 +222,6 @@ public class WebViewActivity extends AppCompatActivity {
         view.evaluateJavascript(script.toString(), null);
     }
 
-    /**
-     * Builds a standard Set-Cookie string from a Chrome-extension style cookie
-     * object so CookieManager can store it.
-     */
     private String buildCookieString(JSONObject cookie) {
         StringBuilder sb = new StringBuilder();
         sb.append(cookie.optString("name")).append("=").append(cookie.optString("value"));
@@ -234,8 +242,6 @@ public class WebViewActivity extends AppCompatActivity {
 
         String sameSite = mapSameSite(cookie.optString("sameSite", ""));
         if (sameSite != null) {
-            // SameSite=None must be accompanied by Secure, otherwise the WebView
-            // rejects the cookie outright.
             if ("None".equals(sameSite) && !secure) {
                 sb.append("; Secure");
             }
@@ -268,7 +274,6 @@ public class WebViewActivity extends AppCompatActivity {
     }
 
     private String formatExpires(long millis) {
-        // Standard HTTP cookie date format: space-separated, not dashes.
         SimpleDateFormat fmt =
                 new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", Locale.US);
         fmt.setTimeZone(TimeZone.getTimeZone("GMT"));
