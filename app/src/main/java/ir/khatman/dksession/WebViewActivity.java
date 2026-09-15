@@ -1,6 +1,9 @@
 package ir.khatman.dksession;
 
 import android.annotation.SuppressLint;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.webkit.CookieManager;
@@ -11,6 +14,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -33,6 +37,9 @@ import java.util.TimeZone;
  * Fetches the session for a given access code from the backend, applies the
  * returned cookies via {@link CookieManager}, then loads Digikala in a WebView
  * and injects the returned localStorage entries.
+ *
+ * Also handles custom URL schemes (e.g. dkjet://, digikala://, intent://) by
+ * forwarding them to the Android OS so the corresponding installed app opens.
  */
 public class WebViewActivity extends AppCompatActivity {
 
@@ -41,7 +48,7 @@ public class WebViewActivity extends AppCompatActivity {
     private static final String BASE_URL = "https://bot.khatman.ir/get-session/";
     private static final String TARGET_URL = "https://www.digikala.com/profile/";
 
-    // ✅ UA اختصاصی اپ — سرور فقط این را قبول می‌کند
+    // UA اختصاصی اپ — سرور فقط این را قبول می‌کند
     private static final String APP_UA = "DKSessionApp/1.0 (Android; Official)";
 
     // UA مرورگر برای WebView (تا دیجی‌کالا بلاک نکند)
@@ -81,9 +88,43 @@ public class WebViewActivity extends AppCompatActivity {
         cookieManager.setAcceptThirdPartyCookies(webView, true);
 
         webView.setWebViewClient(new WebViewClient() {
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return false;
+                Uri uri = request.getUrl();
+                String scheme = uri.getScheme();
+
+                if (scheme == null) {
+                    return false;
+                }
+
+                // http / https را داخل خود WebView باز کن
+                if (scheme.equalsIgnoreCase("http")
+                        || scheme.equalsIgnoreCase("https")) {
+                    return false;
+                }
+
+                // بقیه schemeها (dkjet://، digikala://، intent://، ...) را به سیستم پاس بده
+                return handleCustomScheme(uri);
+            }
+
+            // سازگاری با اندروید 5 و 6 (API 21-22)
+            @SuppressWarnings("deprecation")
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                Uri uri = Uri.parse(url);
+                String scheme = uri.getScheme();
+
+                if (scheme == null) {
+                    return false;
+                }
+
+                if (scheme.equalsIgnoreCase("http")
+                        || scheme.equalsIgnoreCase("https")) {
+                    return false;
+                }
+
+                return handleCustomScheme(uri);
             }
 
             @Override
@@ -125,6 +166,70 @@ public class WebViewActivity extends AppCompatActivity {
     }
 
     /**
+     * لینک‌هایی که scheme سفارشی دارند (dkjet://، digikala://، intent:// و ...)
+     * را به سیستم‌عامل پاس می‌دهد تا اپ مربوطه باز شود.
+     */
+    private boolean handleCustomScheme(Uri uri) {
+        if (uri == null) {
+            return false;
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null) {
+            return false;
+        }
+
+        // intent:// باید جدا پردازش شود
+        if (scheme.equalsIgnoreCase("intent")) {
+            try {
+                Intent intent = Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME);
+                startActivity(intent);
+                return true;
+            } catch (ActivityNotFoundException e) {
+                // اپ نصب نیست — سعی کن از browser_fallback_url استفاده کنی
+                String fallback = null;
+                try {
+                    Intent intent = Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME);
+                    fallback = intent.getStringExtra("browser_fallback_url");
+                } catch (Exception ignored) {
+                }
+
+                if (fallback != null) {
+                    webView.loadUrl(fallback);
+                    return true;
+                }
+                Toast.makeText(this,
+                        "اپ موردنظر نصب نیست",
+                        Toast.LENGTH_SHORT).show();
+                return true;
+            } catch (Exception e) {
+                Toast.makeText(this,
+                        "خطا در باز کردن لینک: " + e.getMessage(),
+                        Toast.LENGTH_SHORT).show();
+                return true;
+            }
+        }
+
+        // بقیه‌ی schemeها (dkjet://، digikala://، bazaar://، ...)
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return true;
+        } catch (ActivityNotFoundException e) {
+            // اپ نصب نیست — پیام نمایش بده
+            Toast.makeText(this,
+                    "اپی برای باز کردن این لینک پیدا نشد",
+                    Toast.LENGTH_SHORT).show();
+            return true;
+        } catch (Exception e) {
+            Toast.makeText(this,
+                    "خطا: " + e.getMessage(),
+                    Toast.LENGTH_SHORT).show();
+            return true;
+        }
+    }
+
+    /**
      * Fetches the session JSON from the backend using the app-specific
      * User-Agent so the server can identify us as the official Android client.
      */
@@ -141,7 +246,7 @@ public class WebViewActivity extends AppCompatActivity {
                 conn.setReadTimeout(15000);
                 conn.setRequestMethod("GET");
 
-                // ✅ این خط حیاتی است
+                // ✅ UA اختصاصی اپ — سرور این را قبول می‌کند
                 conn.setRequestProperty("User-Agent", APP_UA);
                 conn.setRequestProperty("Accept", "application/json");
 
@@ -152,7 +257,8 @@ public class WebViewActivity extends AppCompatActivity {
                     String errBody = "";
                     try {
                         errBody = readStream(conn.getErrorStream());
-                    } catch (Exception ignored) {}
+                    } catch (Exception ignored) {
+                    }
                     final String finalErr = errBody;
                     runOnUiThread(() -> showOverlay(
                             "کد نامعتبر (HTTP " + s + ")\n" +
@@ -167,7 +273,9 @@ public class WebViewActivity extends AppCompatActivity {
                 final String msg = e.getMessage();
                 runOnUiThread(() -> showOverlay("خطای شبکه: " + msg));
             } finally {
-                if (conn != null) conn.disconnect();
+                if (conn != null) {
+                    conn.disconnect();
+                }
             }
         }).start();
     }
