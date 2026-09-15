@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ورود سریع دیجی‌کالا</string>
+    <string name="title">ورود سریع به دیجی‌کالا</string>
+    <string name="subtitle">کد ۱۲ رقمی دسترسی خود را وارد کنید تا نشست شما بارگذاری شود</string>
+    <string name="code_hint">- - - - - - - - - - - -</string>
+    <string name="apply">ورود</string>
+    <string name="loading">در حال دریافت اطلاعات…</string>
+    <string name="error_code_length">کد باید ۱۲ رقم باشد</string>
+    <string name="error_invalid">کد نامعتبر است</string>
+    <string name="error_network">خطا در ارتباط با سرور</string>
+</resources>
