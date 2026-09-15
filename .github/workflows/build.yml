@@ -22,9 +22,6 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
-        with:
-          cmdline-tools-version: 12266719
-          packages: 'tools platform-tools'
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
